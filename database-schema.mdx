@@ -1,7 +1,7 @@
 ---
 title: "Database Schema: Tables, Columns, and Relationships"
 sidebarTitle: "Database Schema"
-description: "Full reference for PharmaVault's five PostgreSQL tables — users, inventory, medicine_catalog, system_responses, and error_logs — including keys and FK relationships."
+description: "Full DDL reference for PharmaVault's five PostgreSQL tables: users, inventory, medicine_catalog, system_responses, and error_logs, with FK relationships."
 ---
 
 PharmaVault stores all data in a PostgreSQL database called `pharmavault_db`, consisting of five tables that are created by two SQL scripts in the `sql/` directory. The schema uses identity columns for all primary keys, UUID generation for incident tracking, and explicit foreign key constraints to maintain referential integrity between users, their inventory, and the error log.
@@ -25,7 +25,7 @@ PharmaVault stores all data in a PostgreSQL database called `pharmavault_db`, co
   <Step title="Connect to pharmavault_db">
     Switch your `psql` session (or client connection) to the newly created database before running the next script.
 
-    ```bash
+    ```sql
     \c pharmavault_db
     ```
   </Step>
@@ -184,7 +184,7 @@ PharmaVault stores all data in a PostgreSQL database called `pharmavault_db`, co
 
 PharmaVault's foreign key constraints encode important data-lifecycle decisions directly in the schema.
 
-```
+```text
 users ──────────────────────────────────────┐
   │  (CASCADE DELETE)                        │  (SET NULL)
   ▼                                          ▼

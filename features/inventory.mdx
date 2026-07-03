@@ -1,5 +1,5 @@
 ---
-title: "Inventory Management: Track Your Medication Stock"
+title: "Inventory Management: Track Your Medication Stock Level"
 sidebarTitle: "Inventory"
 description: "Add, edit, delete, and search your personal medication stock with real-time LINQ filtering and expiration-ordered listings backed by PostgreSQL."
 ---
@@ -175,6 +175,21 @@ public class Inventory
   The `WHERE` clause requires both `inventory_id = @InventoryId AND user_id = @UserId`. This dual-condition check prevents one authenticated user from deleting another user's inventory rows, even if they know the target `inventoryId`.
 
   **Returns:** `true` if the row was deleted; `false` if no matching row was found.
+</Accordion>
+
+<Accordion title="Dashboard Stats — GetDashboardStatsAsync">
+  Aggregates a user's inventory quantities into four buckets used by the dashboard counters and pie chart.
+
+  **Interface signature:**
+  ```csharp
+  Task<DashboardStatsDto> GetDashboardStatsAsync(int userId);
+  ```
+
+  The underlying PostgreSQL query uses `CASE` expressions evaluated against `CURRENT_DATE` to distribute each row's `quantity` into the correct bucket — expired, expiring soon, or good — in a single round-trip. `COALESCE(..., 0)` ensures users with no inventory rows receive zeroes rather than `NULL`.
+
+  **Returns:** A populated `DashboardStatsDto` with `TotalStock`, `ExpiredStock`, `ExpiringSoonStock`, and `GoodStock` counters. Returns a default (all-zero) instance if no rows exist.
+
+  **Called from:** `Dashboard.razor.cs → OnInitializedAsync()`.
 </Accordion>
 
 ## Real-Time Search

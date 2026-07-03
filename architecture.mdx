@@ -1,5 +1,5 @@
 ---
-title: "PharmaVault Architecture: Clean N-Tier Design"
+title: "PharmaVault Architecture: Clean N-Tier Design Overview"
 sidebarTitle: "Architecture"
 description: "How PharmaVault separates domain logic, data access, and presentation into three focused projects with strict, one-directional dependency flow."
 ---
@@ -14,7 +14,7 @@ PharmaVault is structured as a clean N-Tier application split across three .NET 
   <Card title="PharmaVault.Core" icon="circle-dot">
     **Domain layer.** Contains all domain models (`User`, `Inventory`, `MedicineCatalog`, `ErrorLog`, `SystemResponse`), DTOs, and every interface that defines the contracts for data access and services. Has **zero external project dependencies** — it does not reference Data or Web.
 
-    *Key dependency:* `BCrypt.Net-Next` for password hashing.
+    *Key dependency:* `BCrypt.Net-Next 4.1.0` for password hashing.
   </Card>
   <Card title="PharmaVault.Data" icon="database">
     **Infrastructure layer.** Implements the DAO interfaces from Core using raw ADO.NET with the `Npgsql` driver. Houses `NpgsqlExtensions` for lightweight reflection-based object mapping and all SQL queries. References Core only.
@@ -24,7 +24,7 @@ PharmaVault is structured as a clean N-Tier application split across three .NET 
   <Card title="PharmaVault.Web" icon="globe">
     **Presentation layer.** ASP.NET Core Blazor Server application. Hosts Razor components, middleware (`ExceptionHandlingMiddleware`), cookie authentication, and service registration in `Program.cs`. References both Core and Data.
 
-    *Key dependencies:* `BCrypt.Net-Next`, `Blazor-ApexCharts 6.1.0`.
+    *Key dependencies:* `BCrypt.Net-Next 4.1.0`, `Blazor-ApexCharts 6.1.0`.
   </Card>
 </CardGroup>
 
@@ -34,7 +34,7 @@ PharmaVault is structured as a clean N-Tier application split across three .NET 
 
 The dependency graph is strictly unidirectional:
 
-```
+```text
 PharmaVault.Web
     ├── PharmaVault.Core   (domain models + interfaces)
     └── PharmaVault.Data
@@ -169,7 +169,7 @@ The HTTP middleware pipeline is assembled in `Program.cs` in the following order
     In non-Development environments, unhandled exceptions are routed to `/Error` and HSTS headers are added.
   </Step>
   <Step title="Status code pages">
-    `UseStatusCodePagesWithReExecute("/not-found")` serves a custom 404 page for all unmatched routes.
+    `UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true)` serves a custom 404 page for all unmatched routes.
   </Step>
   <Step title="HTTPS redirection">
     All HTTP requests are permanently redirected to HTTPS.

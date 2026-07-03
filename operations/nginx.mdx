@@ -1,7 +1,7 @@
 ---
-title: "Configure Nginx as PharmaVault Reverse Proxy"
+title: "Configuring Nginx as a Reverse Proxy for PharmaVault"
 sidebarTitle: "Nginx"
-description: "Set up Nginx to terminate SSL, redirect HTTP to HTTPS with a 301, and forward WebSocket upgrade headers required by Blazor Server's SignalR connection."
+description: "Configure Nginx to terminate SSL, redirect HTTP to HTTPS, and proxy WebSocket upgrade headers that Blazor Server's SignalR connection requires."
 ---
 
 Nginx acts as the public-facing reverse proxy in front of the PharmaVault Docker container. It handles SSL termination, redirects all plain HTTP traffic to HTTPS, and forwards requests — including WebSocket upgrade handshakes — to the container on `http://127.0.0.1:5010`. The application itself never needs to manage certificates or deal with TLS directly.
@@ -24,11 +24,19 @@ Nginx acts as the public-facing reverse proxy in front of the PharmaVault Docker
 
 The Nginx config template lives at `deploy/nginx/pharmavault.conf` in the repository. Copy it to `/etc/nginx/sites-available/pharmavault` on your server and fill in the two placeholder values before enabling the site.
 
+<Warning>
+  The config file contains two placeholder tokens that **must** be replaced before Nginx will start correctly:
+  - `[YOUR_URL]` — replace with your actual domain name, e.g. `pharmavault.example.com`.
+  - `[YOUR_CERT_PATH]` — replace with the directory containing your SSL certificate and key files, e.g. `/etc/ssl/pharmavault`.
+
+  Leaving either placeholder in place will cause Nginx to fail its configuration test (`nginx -t`).
+</Warning>
+
 <CodeGroup>
 ```nginx pharmavault.conf
 # HTTP server block - redirects all traffic to HTTPS
 server {
-    listen 80;           # Listen on port 80 (HTTP)
+    listen 80;  # Listen on port 80 (HTTP)
     server_name [YOUR_URL];  # Domain name
 
     # Redirect all HTTP requests to HTTPS with a permanent redirect (301)
@@ -37,7 +45,7 @@ server {
 
 # HTTPS server block with SSL and reverse proxy
 server {
-    listen 443 ssl;      # Listen on port 443 (HTTPS with SSL)
+    listen 443 ssl;  # Listen on port 443 (HTTPS with SSL)
     server_name [YOUR_URL];  # Domain name
 
     # SSL certificate and private key paths

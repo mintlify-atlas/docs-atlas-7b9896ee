@@ -1,7 +1,7 @@
 ---
 title: "Deploy PharmaVault on Ubuntu with Docker and Nginx"
 sidebarTitle: "Deployment"
-description: "Step-by-step guide to deploying PharmaVault in production: build a Docker image on Ubuntu, run the container, and serve it via an Nginx reverse proxy with SSL."
+description: "Deploy PharmaVault to production on Ubuntu: build a Docker image, run the container, and serve it through an Nginx reverse proxy with SSL."
 ---
 
 This guide covers a production deployment of PharmaVault on an Ubuntu server using a three-component stack: **Docker** to containerize and run the Blazor application, a **native PostgreSQL** installation on the host for persistent data storage, and **Nginx** as a reverse proxy that terminates SSL and forwards traffic to the container. The Docker container exposes the application on port `8080` internally, which is mapped to port `5010` on the host, and Nginx routes public HTTPS traffic on port `443` to that local port.
@@ -88,8 +88,8 @@ Before proceeding, ensure the following are in place on your Ubuntu server:
     ```nginx deploy/nginx/pharmavault.conf
     # HTTP server block - redirects all traffic to HTTPS
     server {
-        listen 80;
-        server_name [YOUR_URL];
+        listen 80;  # Listen on port 80 (HTTP)
+        server_name [YOUR_URL];  # Domain name
 
         # Redirect all HTTP requests to HTTPS with a permanent redirect (301)
         return 301 https://$host$request_uri;
@@ -97,15 +97,15 @@ Before proceeding, ensure the following are in place on your Ubuntu server:
 
     # HTTPS server block with SSL and reverse proxy
     server {
-        listen 443 ssl;
-        server_name [YOUR_URL];
+        listen 443 ssl;  # Listen on port 443 (HTTPS with SSL)
+        server_name [YOUR_URL];  # Domain name
 
         # SSL certificate and private key paths
         ssl_certificate     /[YOUR_CERT_PATH]/pharmavault.crt;
         ssl_certificate_key /[YOUR_CERT_PATH]/pharmavault.key;
 
         location / {
-            # Reverse proxy to backend application (Docker container on port 5010)
+            # Reverse proxy to backend application (e.g., Docker container)
             proxy_pass http://127.0.0.1:5010;
 
             # Use HTTP/1.1 for proper connection handling (required for WebSockets)
