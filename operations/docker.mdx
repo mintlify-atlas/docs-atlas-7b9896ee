@@ -1,0 +1,163 @@
+---
+title: "Docker Containerization for PharmaVault"
+sidebarTitle: "Docker"
+description: "PharmaVault uses a three-stage Docker build — compile, publish, and a minimal ASP.NET runtime image — exposing port 8080 and accepting config via environment variables."
+---
+
+PharmaVault ships a multi-stage Dockerfile that produces a minimal production image. Each stage has a specific responsibility: the full .NET 10 SDK compiles and publishes the application, and a lightweight ASP.NET runtime image then carries only the output binaries — no SDK, no source code, no build tooling.
+
+## Multi-Stage Build
+
+The three stages follow a deliberate progression that keeps the final image as small as possible while using Docker's layer cache to speed up repeated builds.
+
+<Steps>
+  <Step title="Build Stage — mcr.microsoft.com/dotnet/sdk:10.0">
+    The first stage uses the full .NET 10 SDK image. It copies each project's `.csproj` file individually before copying the rest of the source. This ordering lets Docker cache the `dotnet restore` layer: dependency restoration is only re-run when a project file actually changes.
+
+    ```dockerfile
+    FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+    WORKDIR /src
+
+    COPY ["src/PharmaVault.Core/PharmaVault.Core.csproj", "src/PharmaVault.Core/"]
+    COPY ["src/PharmaVault.Data/PharmaVault.Data.csproj", "src/PharmaVault.Data/"]
+    COPY ["src/PharmaVault.Web/PharmaVault.Web.csproj", "src/PharmaVault.Web/"]
+    RUN dotnet restore "src/PharmaVault.Web/PharmaVault.Web.csproj"
+
+    COPY . .
+    WORKDIR "/src/src/PharmaVault.Web"
+    RUN dotnet build "PharmaVault.Web.csproj" -c Release -o /app/build
+    ```
+  </Step>
+
+  <Step title="Publish Stage — optimise the binaries">
+    The publish stage inherits from the build stage and runs `dotnet publish` to produce a self-contained, trimmed output directory. The `/p:UseAppHost=false` flag suppresses generating a native executable wrapper — the container's entrypoint calls `dotnet` directly, so the wrapper is unnecessary.
+
+    ```dockerfile
+    FROM build AS publish
+    RUN dotnet publish "PharmaVault.Web.csproj" -c Release -o /app/publish /p:UseAppHost=false
+    ```
+  </Step>
+
+  <Step title="Final Stage — mcr.microsoft.com/dotnet/aspnet:10.0">
+    The final image is based on the slim ASP.NET runtime — no SDK, no compiler, no source. Only the compiled output copied from the publish stage is included. Port 8080 is exposed; this is the port ASP.NET Core listens on by default inside Docker.
+
+    ```dockerfile
+    FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+    WORKDIR /app
+    COPY --from=publish /app/publish .
+
+    EXPOSE 8080
+
+    ENTRYPOINT ["dotnet", "PharmaVault.Web.dll"]
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  .NET 8 and later (including .NET 10) configure ASP.NET Core to listen on port **8080** inside Docker containers by default. No `ASPNETCORE_URLS` override is needed.
+</Note>
+
+## Full Dockerfile
+
+<CodeGroup>
+```dockerfile Dockerfile
+# 1. Compilation phase (uses the full .NET 10 SDK)
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Copy the project files and restore dependencies (using the Docker cache)
+COPY ["src/PharmaVault.Core/PharmaVault.Core.csproj", "src/PharmaVault.Core/"]
+COPY ["src/PharmaVault.Data/PharmaVault.Data.csproj", "src/PharmaVault.Data/"]
+COPY ["src/PharmaVault.Web/PharmaVault.Web.csproj", "src/PharmaVault.Web/"]
+RUN dotnet restore "src/PharmaVault.Web/PharmaVault.Web.csproj"
+
+# Copy the rest of the source code and compile it
+COPY . .
+WORKDIR "/src/src/PharmaVault.Web"
+RUN dotnet build "PharmaVault.Web.csproj" -c Release -o /app/build
+
+# 2. Deployment Phase (Optimize the binaries)
+FROM build AS publish
+RUN dotnet publish "PharmaVault.Web.csproj" -c Release -o /app/publish /p:UseAppHost=false
+
+# 3. Production Stage (Use a very lightweight image with just the runtime)
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+COPY --from=publish /app/publish .
+
+# .NET 8/10 in Docker uses port 8080 by default internally
+EXPOSE 8080
+
+# Boot command
+ENTRYPOINT ["dotnet", "PharmaVault.Web.dll"]
+```
+</CodeGroup>
+
+## Building the Image
+
+Run the following command from the root of the repository. The tag `pharmavault-app:latest` is the name referenced in the `docker run` command in the next section.
+
+```bash
+docker build -t pharmavault-app:latest .
+```
+
+<Warning>
+  **Architecture matters.** Build the image directly on the target production server rather than cross-compiling on a development machine. Building on a Mac with Apple Silicon and then deploying to an x86_64 Linux server will produce an ARM image that fails to start. Always `docker build` on the host where the container will run.
+</Warning>
+
+## Running the Container
+
+The `docker run` command below is the recommended way to start PharmaVault in production. Each flag is explained in the table that follows.
+
+```bash
+docker run -d \
+  --name pharmavault-web \
+  --restart unless-stopped \
+  -p 5010:8080 \
+  --add-host=host.docker.internal:host-gateway \
+  -e "ConnectionStrings__DefaultConnection=Host=host.docker.internal;Database=PharmaVaultDb;Username=YOUR_DB_USER;Password=YOUR_DB_PASSWORD" \
+  pharmavault-app:latest
+```
+
+| Flag | Purpose |
+|---|---|
+| `-d` | Run the container in **detached** (background) mode so the terminal is not attached to the container's output. |
+| `--name pharmavault-web` | Assigns a human-readable name to the container, used by all subsequent management commands. |
+| `--restart unless-stopped` | Automatically restart the container after a crash or server reboot — unless it was explicitly stopped with `docker stop`. |
+| `-p 5010:8080` | Maps **host port 5010** to **container port 8080**. Nginx will proxy external HTTPS traffic to `127.0.0.1:5010`. |
+| `--add-host=host.docker.internal:host-gateway` | Injects a DNS entry that resolves `host.docker.internal` to the host machine's gateway IP. This allows the containerised app to reach a PostgreSQL instance installed natively on the host. |
+| `-e "ConnectionStrings__DefaultConnection=..."` | Passes the database connection string as an environment variable. The **double underscore** (`__`) is the .NET convention for mapping environment variables to nested configuration keys — `ConnectionStrings__DefaultConnection` maps to `ConnectionStrings:DefaultConnection` in `appsettings.json`. |
+
+## Container Management Commands
+
+<CodeGroup>
+```bash View Logs
+docker logs pharmavault-web
+```
+
+```bash Stop Container
+docker stop pharmavault-web
+```
+
+```bash Remove Container
+docker rm pharmavault-web
+```
+
+```bash Rebuild and Restart
+# Stop and remove the existing container
+docker stop pharmavault-web
+docker rm pharmavault-web
+
+# Rebuild the image from the latest source
+docker build -t pharmavault-app:latest .
+
+# Start a fresh container
+docker run -d \
+  --name pharmavault-web \
+  --restart unless-stopped \
+  -p 5010:8080 \
+  --add-host=host.docker.internal:host-gateway \
+  -e "ConnectionStrings__DefaultConnection=Host=host.docker.internal;Database=PharmaVaultDb;Username=YOUR_DB_USER;Password=YOUR_DB_PASSWORD" \
+  pharmavault-app:latest
+```
+</CodeGroup>

@@ -1,0 +1,216 @@
+---
+title: "Configure PharmaVault: Connection Strings and Settings"
+sidebarTitle: "Configuration"
+description: "A complete guide to PharmaVault's appsettings, user secrets for local development, and environment variable overrides for Docker deployments."
+---
+
+PharmaVault follows the standard ASP.NET Core configuration model, layering settings from `appsettings.json`, environment-specific overrides, and secrets at runtime. The only required configuration value is a PostgreSQL connection string — every other setting ships with a sensible default that works out of the box.
+
+<Warning>
+  Never commit a real connection string to source control. The `appsettings.json` file intentionally ships with an empty `DefaultConnection` value. Always supply credentials through .NET User Secrets (local development) or environment variables (production and Docker).
+</Warning>
+
+## Connection String
+
+The `ConnectionStrings:DefaultConnection` key is the single required piece of configuration. PharmaVault reads it through the standard `IConfiguration` abstraction, so it works identically whether the value comes from a file, user secrets, or an environment variable.
+
+### Base configuration file
+
+`appsettings.json` declares the key with an intentionally empty value so the shape is visible at a glance without exposing real credentials.
+
+```json appsettings.json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "DefaultConnection": ""
+  }
+}
+```
+
+### Local development — .NET User Secrets
+
+For local development, .NET User Secrets keeps credentials off disk and out of version control. The `UserSecretsId` is already configured in `PharmaVault.Web.csproj`, so you only need to run the following commands once per machine.
+
+<Steps>
+  <Step title="Initialize the secrets store">
+    Run this command from inside the `src/PharmaVault.Web` directory (or any directory in the solution — the project flag makes the target explicit).
+
+    ```bash
+    dotnet user-secrets init
+    ```
+  </Step>
+  <Step title="Set the connection string">
+    Replace `your_user` and `your_password` with the credentials for your local PostgreSQL instance.
+
+    ```bash
+    dotnet user-secrets set "ConnectionStrings:DefaultConnection" \
+      "Host=localhost;Database=PharmaVaultDb;Username=your_user;Password=your_password"
+    ```
+  </Step>
+  <Step title="Verify the secret was stored">
+    Confirm the value was saved correctly.
+
+    ```bash
+    dotnet user-secrets list
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  User Secrets are stored in your OS user profile directory (`~/.microsoft/usersecrets/<UserSecretsId>/secrets.json` on Linux/macOS) and are never copied into the project folder or the build output.
+</Tip>
+
+### Production and Docker — environment variables
+
+ASP.NET Core maps double-underscores (`__`) to the colon (`:`) hierarchy separator, so the connection string can be injected at container runtime without touching any file.
+
+<Tabs>
+  <Tab title="Docker run">
+    ```bash
+    docker run \
+      -e "ConnectionStrings__DefaultConnection=Host=db;Database=pharmavault_db;Username=app;Password=secret" \
+      pharmavault-web
+    ```
+  </Tab>
+  <Tab title="Docker Compose">
+    ```yaml docker-compose.yml
+    services:
+      web:
+        image: pharmavault-web
+        environment:
+          ConnectionStrings__DefaultConnection: >-
+            Host=db;Database=pharmavault_db;Username=app;Password=secret
+    ```
+  </Tab>
+  <Tab title="System environment">
+    ```bash
+    export ConnectionStrings__DefaultConnection="Host=db;Database=pharmavault_db;Username=app;Password=secret"
+    dotnet PharmaVault.Web.dll
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Session Configuration
+
+PharmaVault uses ASP.NET Core cookie authentication to maintain user sessions. The following options are set in `Program.cs`:
+
+| Setting | Value | Notes |
+|---|---|---|
+| Cookie name | `PharmaVaultSession` | Identifies the auth cookie in the browser |
+| Session expiry | 1 hour | Controlled by `ExpireTimeSpan` |
+| Login path | `/` | Unauthenticated requests are redirected to the root (login) page |
+
+```csharp Program.cs (authentication setup)
+builder.Services.AddAuthentication()
+    .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
+    {
+        options.LoginPath = "/"; // Redirect to login if no cookie is present
+        options.Cookie.Name = "PharmaVaultSession";
+        options.ExpireTimeSpan = TimeSpan.FromHours(1);
+    });
+```
+
+A `/logout` endpoint performs a `SignOutAsync` and redirects back to `/`, invalidating the cookie immediately rather than waiting for it to expire naturally.
+
+---
+
+## Logging
+
+The default logging configuration emits `Information`-level messages from application code while suppressing the more verbose ASP.NET Core framework noise below `Warning`.
+
+```json appsettings.json (Logging section)
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  }
+}
+```
+
+<Info>
+  The `Microsoft.AspNetCore: Warning` setting is a standard ASP.NET Core default. It prevents the console from being flooded with request-pipeline tracing messages while still surfacing genuine warnings and errors from the framework.
+</Info>
+
+---
+
+## Development vs. Production
+
+ASP.NET Core merges configuration files in order, with later files winning. The `ASPNETCORE_ENVIRONMENT` variable controls which environment-specific file is loaded.
+
+```json appsettings.Development.json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  }
+}
+```
+
+<Accordion title="How configuration layering works">
+  ASP.NET Core merges configuration sources in this priority order (highest priority wins):
+
+  1. Environment variables
+  2. `appsettings.{Environment}.json` (e.g. `appsettings.Development.json`)
+  3. `appsettings.json`
+  4. Default framework values
+
+  In addition to changing logging behavior, setting `ASPNETCORE_ENVIRONMENT=Development` activates the developer exception page in `Program.cs` (instead of the generic `/Error` handler) and enables detailed stack traces.
+</Accordion>
+
+When running in any environment other than `Development`, PharmaVault enables HSTS and swaps the exception handler to the user-friendly `/Error` page:
+
+```csharp Program.cs (environment-conditional middleware)
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Error", createScopeForErrors: true);
+    app.UseHsts();
+}
+```
+
+---
+
+## Launch Settings
+
+`launchSettings.json` defines two local run profiles. Both set `ASPNETCORE_ENVIRONMENT=Development` automatically, so User Secrets and the developer exception page are always active when launching from `dotnet run` or Visual Studio.
+
+```json Properties/launchSettings.json
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "http": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "applicationUrl": "http://localhost:5136",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "https": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "applicationUrl": "https://localhost:7120;http://localhost:5136",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}
+```
+
+<Note>
+  `launchSettings.json` is used only by local tooling (the .NET CLI and IDEs). It is never read at runtime in production and should **not** be used to store secrets.
+</Note>

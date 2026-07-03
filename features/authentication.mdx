@@ -1,0 +1,201 @@
+---
+title: "Authentication and User Sessions in PharmaVault"
+sidebarTitle: "Authentication"
+description: "PharmaVault uses BCrypt password hashing, cookie-based sessions lasting one hour, and a dedicated logout endpoint to keep user accounts secure."
+---
+
+PharmaVault handles authentication entirely server-side using ASP.NET Core's cookie authentication middleware. There are no third-party identity providers or JWTs — instead, a user's identity is established at login, serialised into a signed and encrypted cookie named `PharmaVaultSession`, and validated on every subsequent request. Passwords are never stored in plaintext; only BCrypt hashes are written to the database, and verification always happens through the BCrypt library at login time.
+
+## User Model
+
+The `User` entity represents a registered account and maps directly to the `users` table in PostgreSQL.
+
+```csharp
+namespace PharmaVault.Core.Models;
+
+public class User
+{
+    public int UserId { get; set; }
+    public string Email { get; set; } = string.Empty;
+    public string PasswordHash { get; set; } = string.Empty;
+    public string FullName { get; set; } = string.Empty;
+    public DateTime RegistrationDate { get; set; }
+}
+```
+
+<ResponseField name="UserId" type="int">
+  Auto-generated primary key. Also stored as the `ClaimTypes.NameIdentifier` claim in the authentication cookie so the server can identify the user on subsequent requests.
+</ResponseField>
+<ResponseField name="Email" type="string">
+  The user's unique email address. Used as the login identifier and stored as the `ClaimTypes.Email` claim.
+</ResponseField>
+<ResponseField name="PasswordHash" type="string">
+  BCrypt hash of the user's password. Never sent to the client or included in UI-facing objects.
+</ResponseField>
+<ResponseField name="FullName" type="string">
+  The user's display name. Stored as the `ClaimTypes.Name` claim and shown in the dashboard header.
+</ResponseField>
+<ResponseField name="RegistrationDate" type="DateTime">
+  Timestamp set by the database when the account was created.
+</ResponseField>
+
+<Warning>
+  The `PasswordHash` field must **never** be transmitted to the client or exposed through any UI component. It exists solely for server-side BCrypt verification and should be treated as a backend-only value.
+</Warning>
+
+## Registration Flow
+
+New accounts are created by calling `IAuthService.RegisterAsync(User user, string plainPassword)`. The service hashes the plaintext password with BCrypt before the `User` object is handed to `IUserDao.CreateAsync`, so the raw password never touches the database layer.
+
+```csharp
+// AuthService.cs
+public async Task<int> RegisterAsync(User user, string plainPassword)
+{
+    user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(plainPassword);
+
+    return await _userDao.CreateAsync(user);
+}
+```
+
+**Interface signature:**
+```csharp
+Task<int> RegisterAsync(User user, string plainPassword);
+```
+
+**Returns:** The `int` primary key (`user_id`) of the newly created account.
+
+The registration form (`Register.razor`) validates three fields before calling `HandleRegisterAsync`:
+
+| Field | Rules |
+|---|---|
+| `FullName` | Required |
+| `Email` | Required, valid email format |
+| `Password` | Required, minimum 6 characters |
+
+If the submitted email is already registered, the `catch` block in `Register.razor.cs` surfaces the message: *"An error occurred during registration. The email might already be in use."*
+
+After successful registration the user is redirected to `/` (the login page) to sign in with their new credentials.
+
+<Note>
+  Passwords are **never stored in plaintext**. Only the BCrypt hash computed by `BCrypt.Net.BCrypt.HashPassword(plainPassword)` is persisted to the database.
+</Note>
+
+## Login Flow
+
+Authentication is handled by `IAuthService.LoginAsync(string email, string plainPassword)`. The service looks up the account by email, then uses BCrypt's `Verify` method to compare the submitted password against the stored hash.
+
+```csharp
+// AuthService.cs
+public async Task<User?> LoginAsync(string email, string plainPassword)
+{
+    var user = await _userDao.GetByEmailAsync(email);
+
+    if (user == null)
+        return null;
+
+    bool isValid = BCrypt.Net.BCrypt.Verify(plainPassword, user.PasswordHash);
+
+    if (!isValid)
+        return null;
+
+    return user;
+}
+```
+
+**Interface signature:**
+```csharp
+Task<User?> LoginAsync(string email, string plainPassword);
+```
+
+**Returns:** The authenticated `User` object, or `null` if the email was not found or the password did not match.
+
+When `LoginAsync` returns a non-null user, `Login.razor.cs` builds a `ClaimsPrincipal` from three claims and signs it in via `HttpContext.SignInAsync`:
+
+```csharp
+var claims = new List<Claim>
+{
+    new(ClaimTypes.NameIdentifier, user.UserId.ToString()),
+    new(ClaimTypes.Name,           user.FullName),
+    new(ClaimTypes.Email,          user.Email)
+};
+
+var identity  = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+var principal = new ClaimsPrincipal(identity);
+
+await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal);
+
+Navigation.NavigateTo("/dashboard");
+```
+
+If the credentials are invalid, `ErrorMessage` is set to `"Invalid email or password."` and no cookie is issued.
+
+## Cookie-Based Sessions
+
+Session state is managed by ASP.NET Core's cookie authentication. The cookie is configured in `Program.cs` as follows:
+
+```csharp
+builder.Services.AddAuthentication()
+    .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
+    {
+        options.LoginPath      = "/";                      // Redirect unauthenticated requests here
+        options.Cookie.Name    = "PharmaVaultSession";
+        options.ExpireTimeSpan = TimeSpan.FromHours(1);   // Session lifetime
+    });
+```
+
+<CardGroup cols={3}>
+  <Card title="Cookie name" icon="cookie">
+    `PharmaVaultSession` — identifies the authentication cookie in the browser.
+  </Card>
+  <Card title="Session duration" icon="hourglass-half">
+    1 hour (`TimeSpan.FromHours(1)`). The session expires after one hour of being issued, regardless of activity.
+  </Card>
+  <Card title="Login redirect" icon="arrow-right-to-bracket">
+    Unauthenticated requests to protected routes are redirected to `/` — the login page.
+  </Card>
+</CardGroup>
+
+`AddCascadingAuthenticationState()` is also registered, which makes the `AuthenticationState` available as a cascading parameter throughout the Blazor component tree.
+
+## Logout
+
+PharmaVault registers a minimal API `POST /logout` endpoint in `Program.cs` that signs out the current cookie session and redirects the browser back to the login page:
+
+```csharp
+app.MapPost("/logout", async (HttpContext context) =>
+{
+    await context.SignOutAsync(
+        Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme
+    );
+    return Results.Redirect("/");
+});
+```
+
+Calling `SignOutAsync` removes the `PharmaVaultSession` cookie from the browser. The `Results.Redirect("/")` response then sends the user back to `/`, where the login form is rendered.
+
+<Note>
+  The logout endpoint uses `POST` (not `GET`) to comply with standard security practices that prevent logout via link prefetching or cross-site GET requests.
+</Note>
+
+## `IUserDao` Interface
+
+The `IUserDao` interface abstracts the two database operations needed by the authentication layer:
+
+```csharp
+namespace PharmaVault.Core.Interfaces;
+
+public interface IUserDao
+{
+    Task<User?> GetByEmailAsync(string email);
+
+    Task<int> CreateAsync(User user);
+}
+```
+
+<ResponseField name="GetByEmailAsync(string email)" type="Task&lt;User?&gt;">
+  Queries the `users` table for a row matching the provided email address. Returns the fully populated `User` object (including `PasswordHash`) if found, or `null` if no account exists for that email. Called by `AuthService.LoginAsync` to retrieve the stored hash for BCrypt verification.
+</ResponseField>
+
+<ResponseField name="CreateAsync(User user)" type="Task&lt;int&gt;">
+  Inserts a new user row (with the pre-hashed `PasswordHash`) and returns the generated `user_id`. Called by `AuthService.RegisterAsync` after the password has been hashed.
+</ResponseField>

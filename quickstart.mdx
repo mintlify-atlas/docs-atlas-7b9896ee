@@ -1,47 +1,206 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get PharmaVault Running Locally in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Clone the repo, create the PostgreSQL database, initialize the schema, configure user secrets, and launch PharmaVault on your local machine."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you through everything needed to run PharmaVault on your local development machine — from creating the PostgreSQL database and applying the schema to wiring up your connection string with .NET User Secrets and launching the Blazor application. By the end you will have a fully functional instance of PharmaVault accessible at `http://localhost:5136`.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, make sure the following are installed and available on your machine:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+- **[.NET 10 SDK](https://dotnet.microsoft.com/download)** or higher
+- **PostgreSQL** — running locally or via Docker
+- **An IDE** — Visual Studio, VS Code, or JetBrains Rider
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Clone the Repository">
+    Open a terminal and clone the PharmaVault source code to your local machine.
 
     ```bash
-    npm install your-package
+    git clone https://github.com/JReyna217/PharmaVault.git
+    cd PharmaVault
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Create the Database">
+    Connect to your PostgreSQL instance and run the database creation script. This creates the `pharmavault_db` database that all subsequent scripts and the application will target.
+
+    ```sql sql/00-CreateDataBase.sql
+    CREATE DATABASE pharmavault_db;
+    ```
+
+    <Tabs>
+      <Tab title="psql CLI">
+        ```bash
+        psql -U postgres -f sql/00-CreateDataBase.sql
+        ```
+      </Tab>
+      <Tab title="psql Interactive">
+        ```bash
+        psql -U postgres
+        ```
+        ```sql
+        CREATE DATABASE pharmavault_db;
+        \q
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Initialize the Schema">
+    With the database created, connect to `pharmavault_db` and execute the schema initialization script. This creates all five tables the application depends on.
+
+    ```sql sql/01-InitSchema.sql
+    CREATE TABLE users (
+        user_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        full_name VARCHAR(100) NOT NULL,
+        registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE medicine_catalog (
+        catalog_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        name VARCHAR(250) NOT NULL,
+        pharmaceutical_form VARCHAR(50) NOT NULL,
+        dosage VARCHAR(50),
+        is_active BOOLEAN DEFAULT TRUE
+    );
+
+    CREATE TABLE inventory (
+        inventory_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        catalog_id INT NOT NULL REFERENCES medicine_catalog(catalog_id),
+        quantity INT NOT NULL DEFAULT 0,
+        purchase_date DATE,
+        expiration_date DATE NOT NULL,
+        prescription_notes TEXT,
+        date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE system_responses (
+        code VARCHAR(6) PRIMARY KEY,
+        message_es TEXT NOT NULL,
+        message_en TEXT NOT NULL
+    );
+
+    CREATE TABLE error_logs (
+        log_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        origin_layer VARCHAR(15) NOT NULL,
+        main_object VARCHAR(50) NOT NULL,
+        method_name VARCHAR(50) NOT NULL,
+        description VARCHAR(4000),
+        error_message VARCHAR(4000) NOT NULL,
+        error_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        user_id INT REFERENCES users(user_id) ON DELETE SET NULL,
+        incident_number UUID DEFAULT gen_random_uuid() NOT NULL
+    );
+    ```
+
+    <Tabs>
+      <Tab title="psql CLI">
+        ```bash
+        psql -U postgres -d pharmavault_db -f sql/01-InitSchema.sql
+        ```
+      </Tab>
+      <Tab title="psql Interactive">
+        ```bash
+        psql -U postgres -d pharmavault_db
+        ```
+        Then paste or `\i sql/01-InitSchema.sql` to run the file.
+      </Tab>
+    </Tabs>
+
+    The script creates the following tables:
+
+    | Table | Purpose |
+    |---|---|
+    | `users` | Registered user accounts with hashed passwords |
+    | `medicine_catalog` | Master catalog of drug names, forms, and dosages |
+    | `inventory` | Per-user medication stock with quantities and expiration dates |
+    | `system_responses` | Bilingual response codes for application messages |
+    | `error_logs` | Structured error records with UUID-based incident tracking |
+  </Step>
+
+  <Step title="Configure User Secrets">
+    The connection string is intentionally excluded from source control. PharmaVault reads it at runtime from .NET's [Secret Manager](https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets). Run these two commands from the repository root:
 
     ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+    # Initialize user secrets for the Web project
+    dotnet user-secrets init --project src/PharmaVault.Web
 
-    ```bash
-    your-cli start
+    # Set your PostgreSQL connection string
+    dotnet user-secrets set "ConnectionStrings:DefaultConnection" \
+      "Host=localhost;Database=pharmavault_db;Username=your_user;Password=your_password" \
+      --project src/PharmaVault.Web
+    ```
+
+    <Warning>
+      Replace `your_user` and `your_password` with your actual PostgreSQL credentials. The database name must match the one you created in Step 2 (`pharmavault_db`).
+    </Warning>
+
+    The secret is stored in your OS user profile and never written to the project directory, so it cannot be accidentally committed to version control.
+  </Step>
+
+  <Step title="Build and Run">
+    From the repository root, build the solution and then start the web application.
+
+    <CodeGroup>
+      ```bash Build
+      dotnet build
+      ```
+
+      ```bash Run
+      dotnet run --project src/PharmaVault.Web
+      ```
+    </CodeGroup>
+
+    You should see output similar to:
+
+    ```
+    info: Microsoft.Hosting.Lifetime[14]
+          Now listening on: http://localhost:5136
+    info: Microsoft.Hosting.Lifetime[0]
+          Application started. Press Ctrl+C to shut down.
     ```
   </Step>
+
+  <Step title="Open the App">
+    Open your browser and navigate to the application. The default URLs defined in `launchSettings.json` are:
+
+    | Profile | URL |
+    |---|---|
+    | `http` | `http://localhost:5136` |
+    | `https` | `https://localhost:7120` |
+
+    The application will launch to the login page. Register a new account to get started.
+  </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+<Note>
+  **Hot Reload** — For a faster development loop with automatic browser refresh on file saves, use `dotnet watch` instead of `dotnet run`:
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  ```bash
+  dotnet watch --project src/PharmaVault.Web
+  ```
+</Note>
+
+<Tip>
+  **Docker PostgreSQL alternative** — If you prefer not to install PostgreSQL natively, you can spin up a container in seconds:
+
+  ```bash
+  docker run -d \
+    --name pharmavault-postgres \
+    -e POSTGRES_USER=your_user \
+    -e POSTGRES_PASSWORD=your_password \
+    -e POSTGRES_DB=pharmavault_db \
+    -p 5432:5432 \
+    postgres:latest
+  ```
+
+  Then use `Host=localhost;Port=5432` in your user secret connection string and proceed with Steps 3 and 4 as normal.
 </Tip>

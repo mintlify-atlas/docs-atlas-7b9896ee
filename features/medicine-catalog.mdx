@@ -1,0 +1,166 @@
+---
+title: "Medicine Catalog: Manage Your Drug Master List"
+sidebarTitle: "Medicine Catalog"
+description: "Define and maintain the master list of drugs available in PharmaVault, with soft-delete toggling to control which medicines appear in inventory forms."
+---
+
+The medicine catalog is PharmaVault's centralised drug reference. Rather than letting users type free-form medicine names directly into their inventory, the application separates drug metadata — name, pharmaceutical form, and dosage — into a dedicated `medicine_catalog` table. Inventory entries then reference catalog records by `catalog_id`. This design prevents duplicate or misspelled entries, keeps drug details consistent across all your inventory rows, and lets you deactivate a medicine without losing historical stock data.
+
+## The `MedicineCatalog` Model
+
+```csharp
+using System.ComponentModel.DataAnnotations;
+
+namespace PharmaVault.Core.Models;
+
+public class MedicineCatalog
+{
+    public int CatalogId { get; set; }
+
+    [Required(ErrorMessage = "The medicine name is required.")]
+    [StringLength(250, ErrorMessage = "The name cannot exceed 250 characters.")]
+    public string Name { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "The pharmaceutical form is required.")]
+    [StringLength(50, ErrorMessage = "The form cannot exceed 50 characters.")]
+    public string PharmaceuticalForm { get; set; } = string.Empty;
+
+    [StringLength(50, ErrorMessage = "The dosage cannot exceed 50 characters.")]
+    public string? Dosage { get; set; }
+
+    public bool IsActive { get; set; } = true;
+}
+```
+
+<Tabs>
+  <Tab title="Fields">
+    <ParamField path="CatalogId" type="int">
+      Auto-generated primary key returned by PostgreSQL via `RETURNING catalog_id` on insert. Used as the foreign key in the `inventory` table.
+    </ParamField>
+    <ParamField path="Name" type="string" required>
+      The full medicine name (e.g., *Amoxicillin*, *Ibuprofen 400mg Tablet*). Required; maximum 250 characters.
+    </ParamField>
+    <ParamField path="PharmaceuticalForm" type="string" required>
+      The dosage form of the medicine. Required; maximum 50 characters. This is a free-text field — see the note below for common values.
+    </ParamField>
+    <ParamField path="Dosage" type="string | null">
+      Optional strength or concentration string (e.g., `500mg`, `10mg/5mL`). Maximum 50 characters. May be left blank when the strength is already encoded in the name.
+    </ParamField>
+    <ParamField path="IsActive" type="bool">
+      Controls visibility in the inventory form's medicine dropdown. Defaults to `true` when a new record is created. Set to `false` via **Toggle Active Status** to perform a soft-delete.
+    </ParamField>
+  </Tab>
+  <Tab title="Validation rules">
+    | Field | Rule | Error message |
+    |---|---|---|
+    | `Name` | Required | "The medicine name is required." |
+    | `Name` | Max 250 chars | "The name cannot exceed 250 characters." |
+    | `PharmaceuticalForm` | Required | "The pharmaceutical form is required." |
+    | `PharmaceuticalForm` | Max 50 chars | "The form cannot exceed 50 characters." |
+    | `Dosage` | Max 50 chars | "The dosage cannot exceed 50 characters." |
+  </Tab>
+</Tabs>
+
+## Pharmaceutical Forms
+
+<Note>
+  `PharmaceuticalForm` is a **free-text field** — there is no fixed enumeration. You may enter any value that accurately describes the medicine's dosage form. Common examples include:
+
+  `Tablet` · `Capsule` · `Syrup` · `Injection` · `Cream` · `Drops` · `Inhaler` · `Patch` · `Suppository` · `Solution`
+
+  Consistency in naming helps the inventory's real-time search to group related entries correctly.
+</Note>
+
+## Catalog Operations
+
+<Accordion title="List All Medicines — GetAllAsync">
+  Returns every record in `medicine_catalog`, ordered alphabetically by `name ASC`. Both active and inactive medicines are returned so the catalog management page can display the full list and allow administrators to toggle status.
+
+  **Interface signature:**
+  ```csharp
+  Task<IEnumerable<MedicineCatalog>> GetAllAsync();
+  ```
+
+  **SQL:**
+  ```sql
+  SELECT
+      catalog_id        AS CatalogId,
+      name              AS Name,
+      pharmaceutical_form AS PharmaceuticalForm,
+      dosage            AS Dosage,
+      is_active         AS IsActive
+  FROM medicine_catalog
+  ORDER BY name ASC;
+  ```
+
+  **Called from:** `Medicines.razor.cs → LoadMedicinesAsync()` and `Inventory.razor.cs → OnInitializedAsync()` to populate the catalog dropdown.
+</Accordion>
+
+<Accordion title="Create Medicine — CreateAsync">
+  Inserts a new record into `medicine_catalog` and returns the auto-generated primary key.
+
+  **Interface signature:**
+  ```csharp
+  Task<int> CreateAsync(MedicineCatalog medicine);
+  ```
+
+  New medicines are created with `IsActive = true` by default (the model's property initialiser). The `catalog_id` is returned via PostgreSQL's `RETURNING` clause.
+
+  **Returns:** The `int` primary key (`catalog_id`) of the newly inserted record.
+</Accordion>
+
+<Accordion title="Update Medicine — UpdateAsync">
+  Overwrites all mutable fields on an existing catalog record.
+
+  **Interface signature:**
+  ```csharp
+  Task<bool> UpdateAsync(MedicineCatalog medicine);
+  ```
+
+  All four editable fields are updated in a single statement:
+
+  | Field | Notes |
+  |---|---|
+  | `Name` | Required; max 250 chars |
+  | `PharmaceuticalForm` | Required; max 50 chars |
+  | `Dosage` | Optional; set to `NULL` to clear |
+  | `IsActive` | Can be toggled here as well as via `ToggleActiveAsync` |
+
+  **Returns:** `true` if one row was updated; `false` if the `catalog_id` was not found.
+</Accordion>
+
+<Accordion title="Toggle Active Status — ToggleActiveAsync">
+  Performs a targeted update that flips only the `is_active` column for a given `catalog_id`. This is the mechanism behind soft-delete in PharmaVault.
+
+  **Interface signature:**
+  ```csharp
+  Task<bool> ToggleActiveAsync(int catalogId, bool isActive);
+  ```
+
+  The `Medicines.razor.cs` page passes the **inverse** of the current status so the button acts as a toggle:
+
+  ```csharp
+  await MedicineCatalogDao.ToggleActiveAsync(catalogId, !currentStatus);
+  ```
+
+  **Returns:** `true` if the row was found and updated; `false` otherwise.
+</Accordion>
+
+## Active/Inactive Status
+
+The `IsActive` flag is PharmaVault's soft-delete mechanism for the catalog. Setting a medicine to inactive has the following effect:
+
+<CardGroup cols={2}>
+  <Card title="Catalog page" icon="list">
+    The record remains visible in the full catalog list so you can review it, re-activate it, or update its details at any time.
+  </Card>
+  <Card title="Inventory form" icon="ban">
+    Inactive medicines are **not shown** in the medicine dropdown on the Add/Edit Inventory form. Users cannot create new stock entries referencing an inactive catalog record.
+  </Card>
+</CardGroup>
+
+<Warning>
+  Deactivating a catalog entry does **not** remove or hide existing inventory rows that already reference it. Historical stock data is preserved — only the ability to add *new* inventory items for that medicine is blocked.
+</Warning>
+
+This design lets you retire discontinued or unavailable drugs from day-to-day use without destroying the audit trail of past stock they were associated with.

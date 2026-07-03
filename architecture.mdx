@@ -1,0 +1,189 @@
+---
+title: "PharmaVault Architecture: Clean N-Tier Design"
+sidebarTitle: "Architecture"
+description: "How PharmaVault separates domain logic, data access, and presentation into three focused projects with strict, one-directional dependency flow."
+---
+
+PharmaVault is structured as a clean N-Tier application split across three .NET 10 projects. Each layer has a single, well-defined responsibility, and dependencies only flow in one direction — from the outer layers inward toward the domain core. This means business rules never depend on infrastructure details, and swapping a data access implementation requires no changes to the Core or Web layers.
+
+---
+
+## The Three Layers
+
+<CardGroup cols={3}>
+  <Card title="PharmaVault.Core" icon="circle-dot">
+    **Domain layer.** Contains all domain models (`User`, `Inventory`, `MedicineCatalog`, `ErrorLog`, `SystemResponse`), DTOs, and every interface that defines the contracts for data access and services. Has **zero external project dependencies** — it does not reference Data or Web.
+
+    *Key dependency:* `BCrypt.Net-Next` for password hashing.
+  </Card>
+  <Card title="PharmaVault.Data" icon="database">
+    **Infrastructure layer.** Implements the DAO interfaces from Core using raw ADO.NET with the `Npgsql` driver. Houses `NpgsqlExtensions` for lightweight reflection-based object mapping and all SQL queries. References Core only.
+
+    *Key dependencies:* `Npgsql 10.0.2`, `Microsoft.Extensions.Configuration.Abstractions 10.0.5`.
+  </Card>
+  <Card title="PharmaVault.Web" icon="globe">
+    **Presentation layer.** ASP.NET Core Blazor Server application. Hosts Razor components, middleware (`ExceptionHandlingMiddleware`), cookie authentication, and service registration in `Program.cs`. References both Core and Data.
+
+    *Key dependencies:* `BCrypt.Net-Next`, `Blazor-ApexCharts 6.1.0`.
+  </Card>
+</CardGroup>
+
+---
+
+## Dependency Direction
+
+The dependency graph is strictly unidirectional:
+
+```
+PharmaVault.Web
+    ├── PharmaVault.Core   (domain models + interfaces)
+    └── PharmaVault.Data
+            └── PharmaVault.Core
+```
+
+- **Core** has no references to Data or Web. It is independently compilable and testable.
+- **Data** references Core to implement its interfaces and use domain models as return types.
+- **Web** references both Core (for interfaces and models in Blazor components) and Data (to register concrete implementations in the DI container).
+
+<Note>
+  All three projects target **net10.0**, as declared in each `.csproj` file. .NET 10 is required to build and run PharmaVault.
+</Note>
+
+---
+
+## Interface-Based Design
+
+All data access operations are expressed as interfaces declared in `PharmaVault.Core.Interfaces`. The Web layer consumes only these interfaces — never a concrete DAO class — making the data access layer fully replaceable without touching component code.
+
+<Accordion title="IUserDao">
+  ```csharp
+  public interface IUserDao
+  {
+      Task<User?> GetByEmailAsync(string email);
+      Task<int> CreateAsync(User user);
+  }
+  ```
+</Accordion>
+
+<Accordion title="IMedicineCatalogDao">
+  ```csharp
+  public interface IMedicineCatalogDao
+  {
+      Task<IEnumerable<MedicineCatalog>> GetAllAsync();
+      Task<int> CreateAsync(MedicineCatalog medicine);
+      Task<bool> UpdateAsync(MedicineCatalog medicine);
+      Task<bool> ToggleActiveAsync(int catalogId, bool isActive);
+  }
+  ```
+</Accordion>
+
+<Accordion title="IInventoryDao">
+  ```csharp
+  public interface IInventoryDao
+  {
+      Task<IEnumerable<InventoryItemDto>> GetUserInventoryAsync(int userId);
+      Task<int> AddToInventoryAsync(Inventory inventory);
+      Task<bool> UpdateInventoryAsync(Inventory inventory);
+      Task<bool> DeleteFromInventoryAsync(int inventoryId, int userId);
+      Task<DashboardStatsDto> GetDashboardStatsAsync(int userId);
+  }
+  ```
+</Accordion>
+
+<Accordion title="IErrorLogDao">
+  ```csharp
+  public interface IErrorLogDao
+  {
+      Task<Guid> LogErrorAsync(ExceptionLogDto request, int? userId = null);
+  }
+  ```
+</Accordion>
+
+<Accordion title="IAuthService">
+  ```csharp
+  public interface IAuthService
+  {
+      Task<int> RegisterAsync(User user, string plainPassword);
+      Task<User?> LoginAsync(string email, string plainPassword);
+  }
+  ```
+</Accordion>
+
+---
+
+## Dependency Injection
+
+All services and DAOs are registered with a **scoped** lifetime in `Program.cs`. Scoped means one instance per HTTP request, which is the correct lifetime for database connections in Blazor Server.
+
+```csharp Program.cs
+// DAOs — infrastructure implementations of Core interfaces
+builder.Services.AddScoped<IUserDao, UserDao>();
+builder.Services.AddScoped<IMedicineCatalogDao, MedicineCatalogDao>();
+builder.Services.AddScoped<IInventoryDao, InventoryDao>();
+builder.Services.AddScoped<IErrorLogDao, ErrorLogDao>();
+
+// Services — business logic implementations of Core interfaces
+builder.Services.AddScoped<IAuthService, AuthService>();
+```
+
+### Service registration table
+
+| Interface | Implementation | Layer |
+|---|---|---|
+| `IUserDao` | `UserDao` | Data |
+| `IMedicineCatalogDao` | `MedicineCatalogDao` | Data |
+| `IInventoryDao` | `InventoryDao` | Data |
+| `IErrorLogDao` | `ErrorLogDao` | Data |
+| `IAuthService` | `AuthService` | Core/Services |
+
+---
+
+## Data Access Pattern
+
+PharmaVault uses a **custom ADO.NET approach** rather than Entity Framework Core. All queries are written as raw SQL executed through `NpgsqlCommand`, and result sets are mapped to domain model objects via the `NpgsqlExtensions` helper class in `PharmaVault.Data.Extensions`.
+
+`NpgsqlExtensions` provides two primary methods:
+
+```csharp NpgsqlExtensions.cs
+// Map a result set to a List<T> using reflection
+public static async Task<List<T>> FillToObjectListAsync<T>(this NpgsqlCommand dbCommand) where T : new()
+
+// Map the first row of a result set to a single T?
+public static async Task<T?> FillToObjectAsync<T>(this NpgsqlCommand dbCommand) where T : class, new()
+```
+
+The mapper matches column names to C# property names (case-insensitively), handles `DBNull` safely, and performs type coercion for booleans, `DateTime`, and enums. This gives DAO authors the same convenience as a micro-ORM like Dapper while keeping the full SQL query visible and editable.
+
+<Info>
+  The raw-SQL / ADO.NET approach was chosen to keep query logic fully explicit and to avoid the migration overhead that comes with EF Core when working directly against a PostgreSQL schema managed by hand-authored SQL scripts.
+</Info>
+
+---
+
+## Middleware Pipeline
+
+The HTTP middleware pipeline is assembled in `Program.cs` in the following order:
+
+<Steps>
+  <Step title="Exception handler / HSTS (production only)">
+    In non-Development environments, unhandled exceptions are routed to `/Error` and HSTS headers are added.
+  </Step>
+  <Step title="Status code pages">
+    `UseStatusCodePagesWithReExecute("/not-found")` serves a custom 404 page for all unmatched routes.
+  </Step>
+  <Step title="HTTPS redirection">
+    All HTTP requests are permanently redirected to HTTPS.
+  </Step>
+  <Step title="ExceptionHandlingMiddleware">
+    Custom middleware that catches unhandled exceptions, logs them to the `error_logs` table via `IErrorLogDao`, and returns a structured error response.
+  </Step>
+  <Step title="Authentication and Authorization">
+    Cookie authentication (`PharmaVaultSession`) is validated on every request.
+  </Step>
+  <Step title="Antiforgery">
+    CSRF protection for all Blazor Server form interactions.
+  </Step>
+  <Step title="Static assets and Razor components">
+    Static files are served, then Razor components are mapped with Interactive Server render mode enabled.
+  </Step>
+</Steps>

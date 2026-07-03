@@ -1,0 +1,82 @@
+{
+  "projectType": "saas",
+  "projectName": "PharmaVault",
+  "projectDescription": "A web-based personal medication inventory management system built with ASP.NET Core Blazor and PostgreSQL that tracks drug stock, expiration dates, and a centralized medicine catalog.",
+  "theme": "almond",
+  "primaryColor": "#6421e6",
+  "lightColor": "#b48cf4",
+  "darkColor": "#e2dae9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "deployment"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/dashboard",
+              "features/inventory",
+              "features/medicine-catalog",
+              "features/authentication"
+            ]
+          },
+          {
+            "group": "Configuration & Architecture",
+            "pages": [
+              "configuration",
+              "architecture",
+              "database-schema"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/docker",
+              "operations/nginx",
+              "operations/error-handling"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Secure cookie-based authentication with BCrypt password hashing",
+    "Personal medication inventory with full CRUD (add, edit, delete stock)",
+    "Centralized medicine catalog with pharmaceutical form and dosage tracking",
+    "Real-time inventory search using LINQ client-side filtering",
+    "Analytics dashboard with ApexCharts showing total, good, expiring soon, and expired stock",
+    "Expiration date alerting with 30-day warning threshold",
+    "Clean Architecture / N-Tier layered design (Core, Data, Web)",
+    "Raw ADO.NET with custom NpgsqlExtensions for high-performance queries",
+    "Docker containerization with multi-stage builds",
+    "Nginx reverse proxy configuration with WebSocket (SignalR) support",
+    "Global exception handling middleware with UUID incident tracking and error logging"
+  ],
+  "publicApiSurface": [
+    "IAuthService.RegisterAsync(User user, string plainPassword)",
+    "IAuthService.LoginAsync(string email, string plainPassword)",
+    "IInventoryDao.GetUserInventoryAsync(int userId)",
+    "IInventoryDao.AddToInventoryAsync(Inventory inventory)",
+    "IInventoryDao.UpdateInventoryAsync(Inventory inventory)",
+    "IInventoryDao.DeleteFromInventoryAsync(int inventoryId, int userId)",
+    "IInventoryDao.GetDashboardStatsAsync(int userId)",
+    "IMedicineCatalogDao.GetAllAsync()",
+    "IMedicineCatalogDao.CreateAsync(MedicineCatalog medicine)",
+    "IMedicineCatalogDao.UpdateAsync(MedicineCatalog medicine)",
+    "IMedicineCatalogDao.ToggleActiveAsync(int catalogId, bool isActive)",
+    "IUserDao.GetByEmailAsync(string email)",
+    "IUserDao.CreateAsync(User user)",
+    "IErrorLogDao.LogErrorAsync(ExceptionLogDto details, int? userId)",
+    "POST /logout",
+    "ErrorExceptionResponse(string errorCode, HttpStatusCode statusCode, ExceptionLogDto details)"
+  ]
+}

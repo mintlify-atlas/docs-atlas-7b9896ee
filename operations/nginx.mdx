@@ -1,0 +1,203 @@
+---
+title: "Configure Nginx as PharmaVault Reverse Proxy"
+sidebarTitle: "Nginx"
+description: "Set up Nginx to terminate SSL, redirect HTTP to HTTPS with a 301, and forward WebSocket upgrade headers required by Blazor Server's SignalR connection."
+---
+
+Nginx acts as the public-facing reverse proxy in front of the PharmaVault Docker container. It handles SSL termination, redirects all plain HTTP traffic to HTTPS, and forwards requests — including WebSocket upgrade handshakes — to the container on `http://127.0.0.1:5010`. The application itself never needs to manage certificates or deal with TLS directly.
+
+## Why Nginx Is Needed
+
+<CardGroup cols={3}>
+  <Card title="SSL Termination" icon="lock">
+    Nginx holds the SSL certificate and handles the TLS handshake. The backend container communicates over unencrypted HTTP on the internal loopback interface.
+  </Card>
+  <Card title="HTTP → HTTPS Redirect" icon="arrow-right">
+    A dedicated server block on port 80 issues a permanent 301 redirect to the HTTPS equivalent URL, ensuring all traffic is encrypted in transit.
+  </Card>
+  <Card title="WebSocket / SignalR Support" icon="plug">
+    Blazor Server relies on SignalR, which uses WebSocket connections. The `Upgrade` and `Connection` headers must be forwarded or the interactive UI will not function.
+  </Card>
+</CardGroup>
+
+## Configuration File
+
+The Nginx config template lives at `deploy/nginx/pharmavault.conf` in the repository. Copy it to `/etc/nginx/sites-available/pharmavault` on your server and fill in the two placeholder values before enabling the site.
+
+<CodeGroup>
+```nginx pharmavault.conf
+# HTTP server block - redirects all traffic to HTTPS
+server {
+    listen 80;           # Listen on port 80 (HTTP)
+    server_name [YOUR_URL];  # Domain name
+
+    # Redirect all HTTP requests to HTTPS with a permanent redirect (301)
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS server block with SSL and reverse proxy
+server {
+    listen 443 ssl;      # Listen on port 443 (HTTPS with SSL)
+    server_name [YOUR_URL];  # Domain name
+
+    # SSL certificate and private key paths
+    ssl_certificate     /[YOUR_CERT_PATH]/pharmavault.crt;
+    ssl_certificate_key /[YOUR_CERT_PATH]/pharmavault.key;
+
+    location / {
+        # Reverse proxy to backend application (e.g., Docker container)
+        proxy_pass http://127.0.0.1:5010;
+
+        # Use HTTP/1.1 for proper connection handling (required for WebSockets)
+        proxy_http_version 1.1;
+
+        # Support WebSocket upgrades
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Preserve original host header
+        proxy_set_header Host $host;
+
+        # Bypass cache when upgrading connection (e.g., WebSockets)
+        proxy_cache_bypass $http_upgrade;
+
+        # Forward client IP address to backend
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # Forward original protocol (http or https)
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Access and error logs
+    access_log /var/log/nginx/pharmavault.access.log;
+    error_log  /var/log/nginx/pharmavault.error.log;
+}
+```
+</CodeGroup>
+
+## Configuration Breakdown
+
+<Accordion title="HTTP Block (Port 80) — Redirect to HTTPS">
+  The first server block listens on port 80 and does nothing other than issue a **permanent 301 redirect** to the HTTPS equivalent of whatever URL was requested. The `$host` and `$request_uri` variables preserve the original domain and path, so bookmarked URLs and crawled links automatically resolve to the secure version.
+
+  ```nginx
+  server {
+      listen 80;
+      server_name [YOUR_URL];
+      return 301 https://$host$request_uri;
+  }
+  ```
+</Accordion>
+
+<Accordion title="HTTPS Block (Port 443) — SSL and Reverse Proxy">
+  The second server block handles all encrypted traffic. The `ssl_certificate` and `ssl_certificate_key` directives point to the certificate files on disk. Once TLS is terminated, Nginx forwards every request to the PharmaVault Docker container at `http://127.0.0.1:5010` via `proxy_pass`.
+
+  ```nginx
+  listen 443 ssl;
+  server_name [YOUR_URL];
+
+  ssl_certificate     /[YOUR_CERT_PATH]/pharmavault.crt;
+  ssl_certificate_key /[YOUR_CERT_PATH]/pharmavault.key;
+
+  location / {
+      proxy_pass http://127.0.0.1:5010;
+      ...
+  }
+  ```
+</Accordion>
+
+<Accordion title="WebSocket Headers — Required for Blazor Server SignalR">
+  Blazor Server maintains a persistent WebSocket connection between the browser and server to process UI events and push DOM updates in real time. This connection is negotiated via an HTTP Upgrade handshake. Three directives work together to make this possible:
+
+  - `proxy_http_version 1.1` — HTTP/1.0 does not support persistent connections; WebSockets require HTTP/1.1.
+  - `proxy_set_header Upgrade $http_upgrade` — Forwards the browser's `Upgrade: websocket` header to the backend.
+  - `proxy_set_header Connection "upgrade"` — Instructs Nginx to treat this as a connection upgrade rather than a standard HTTP request.
+
+  ```nginx
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+  proxy_cache_bypass $http_upgrade;
+  ```
+</Accordion>
+
+<Accordion title="Forwarded Headers — Client IP and Protocol">
+  Because requests arrive at the application from Nginx (127.0.0.1) rather than directly from the client, the original client context must be passed explicitly through headers.
+
+  - `X-Forwarded-For` — The real client IP address, appended to the forwarding chain by `$proxy_add_x_forwarded_for`.
+  - `X-Forwarded-Proto` — The original protocol (`http` or `https`) via `$scheme`, so ASP.NET Core can correctly determine whether the request was secure.
+
+  ```nginx
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header Host $host;
+  ```
+</Accordion>
+
+<Accordion title="Logging — Access and Error Logs">
+  The access and error logs are written to dedicated files under `/var/log/nginx/`, keeping PharmaVault traffic separate from any other sites on the same server.
+
+  ```nginx
+  access_log /var/log/nginx/pharmavault.access.log;
+  error_log  /var/log/nginx/pharmavault.error.log;
+  ```
+
+  Tail either log in real time with `sudo tail -f /var/log/nginx/pharmavault.access.log`.
+</Accordion>
+
+## Deployment Steps
+
+<Steps>
+  <Step title="Copy the config to sites-available">
+    From the root of the cloned repository, copy the template to the Nginx configuration directory:
+
+    ```bash
+    sudo cp deploy/nginx/pharmavault.conf /etc/nginx/sites-available/pharmavault
+    ```
+  </Step>
+
+  <Step title="Fill in the placeholders">
+    Open the file with a text editor and replace the two placeholder tokens:
+
+    - `[YOUR_URL]` → your domain name, e.g. `pharmavault.example.com`
+    - `[YOUR_CERT_PATH]` → the directory containing your SSL certificate and key files, e.g. `/etc/ssl/pharmavault`
+
+    ```bash
+    sudo nano /etc/nginx/sites-available/pharmavault
+    ```
+  </Step>
+
+  <Step title="Enable the site">
+    Create a symbolic link from `sites-available` to `sites-enabled`:
+
+    ```bash
+    sudo ln -s /etc/nginx/sites-available/pharmavault /etc/nginx/sites-enabled/
+    ```
+  </Step>
+
+  <Step title="Test the configuration">
+    Validate the Nginx config for syntax errors before applying it:
+
+    ```bash
+    sudo nginx -t
+    ```
+
+    A successful test prints `syntax is ok` and `test is successful`.
+  </Step>
+
+  <Step title="Reload Nginx">
+    Apply the new configuration with a graceful reload (no downtime):
+
+    ```bash
+    sudo systemctl reload nginx
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  **Do not remove the WebSocket upgrade headers.** The `Upgrade` and `Connection "upgrade"` directives are not optional for Blazor Server. Removing either header breaks the SignalR WebSocket connection — the page will load its initial HTML but all interactive components will stop responding and real-time UI updates will cease entirely.
+</Warning>
+
+<Tip>
+  **Free SSL certificates with Let's Encrypt.** Install [Certbot](https://certbot.eff.org/) on your server and run `sudo certbot --nginx -d your-domain.com`. Certbot will provision a certificate from Let's Encrypt, automatically update your Nginx config with the correct `ssl_certificate` paths, and schedule auto-renewal — no manual certificate management required.
+</Tip>

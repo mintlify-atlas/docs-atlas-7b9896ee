@@ -1,0 +1,71 @@
+---
+title: "PharmaVault: Medication Inventory for Individuals & Families"
+sidebarTitle: "Introduction"
+description: "PharmaVault is a web-based medication inventory system that helps individuals and families track stock levels, expiration dates, and medicine catalogs."
+---
+
+PharmaVault is a web-based personal medication inventory management system built to solve a common household problem: medications that expire unnoticed, duplicate purchases from forgotten stock, and no single place to view the health of your pharmaceutical supplies. With PharmaVault, users can maintain a master drug catalog, track individual inventory items tied to their account, and get at-a-glance analytics on everything from total stock counts to medicines approaching expiration — all through a responsive Blazor dashboard secured by cookie-based authentication.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Authentication & Authorization" icon="lock">
+    Secure cookie-based sessions powered by ASP.NET Core Cookie Authentication. Sessions expire after one hour, and all routes are protected against unauthenticated access.
+  </Card>
+  <Card title="Inventory Management" icon="boxes-stacked">
+    Full CRUD operations for personal medication stock. Each inventory entry links to a catalog medicine and records quantity, purchase date, expiration date, and prescription notes.
+  </Card>
+  <Card title="Medicine Catalog" icon="book-open">
+    A centralized master catalog of drug names, pharmaceutical forms, and dosages. Catalog entries are reused across all user inventories, keeping data consistent and reducing duplication.
+  </Card>
+  <Card title="Analytics Dashboard" icon="chart-bar">
+    Interactive charts powered by ApexCharts display inventory health at a glance — Total items, Good Condition, Expiring Soon, and Expired counts rendered in real time.
+  </Card>
+  <Card title="Real-time Search" icon="magnifying-glass">
+    Client-side inventory filtering using LINQ delivers zero-latency search results as you type, with no round-trips to the server required.
+  </Card>
+  <Card title="Expiration Alerts" icon="triangle-exclamation">
+    Visual indicators flag medicines that are expiring soon or already past their expiration date, so nothing slips through unnoticed.
+  </Card>
+</CardGroup>
+
+## Tech Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Presentation | ASP.NET Core Blazor (Interactive Server) | Rich interactive UI in C#, shared models between client and server |
+| Database | PostgreSQL | Reliable relational storage with strong date/time support |
+| Data Access | ADO.NET with Npgsql / custom extensions | Raw SQL with lightweight mapping for maximum query performance |
+| UI Framework | Bootstrap 5 | Responsive, mobile-first layout |
+| Charts | ApexCharts | Interactive, real-time analytics dashboard |
+
+## Architecture
+
+PharmaVault follows a **Clean Architecture / N-Tier** design with a strict separation of concerns across three layers:
+
+- **PharmaVault.Core** — Domain models, DTOs, and interfaces. Contains all business logic with zero external dependencies.
+- **PharmaVault.Data** — Infrastructure layer that implements the Repository Pattern (DAOs) and communicates directly with PostgreSQL via Npgsql.
+- **PharmaVault.Web** — Presentation layer built with Blazor, responsible for the UI, component state, authentication middleware, and request routing.
+
+<Info>
+  The Core layer has no knowledge of the database or the web framework. This makes it straightforward to swap out the data layer or the presentation layer independently.
+</Info>
+
+## Roadmap
+
+The following enhancements are planned for future releases:
+
+- **Consumption logging** — Subtract stock units when a medication is taken, building a usage history over time.
+- **Excel / PDF export** — Generate downloadable inventory reports for sharing with healthcare providers or for personal record-keeping.
+- **Email notifications** — Automated alerts sent to users when medicines in their inventory are approaching their expiration date.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get PharmaVault running locally in 5 minutes — database setup, secrets configuration, and your first run.
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment">
+    Deploy to Ubuntu with Docker and Nginx for a production-ready setup with SSL and reverse proxying.
+  </Card>
+</CardGroup>

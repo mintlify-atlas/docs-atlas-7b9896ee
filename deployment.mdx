@@ -1,0 +1,159 @@
+---
+title: "Deploy PharmaVault on Ubuntu with Docker and Nginx"
+sidebarTitle: "Deployment"
+description: "Step-by-step guide to deploying PharmaVault in production: build a Docker image on Ubuntu, run the container, and serve it via an Nginx reverse proxy with SSL."
+---
+
+This guide covers a production deployment of PharmaVault on an Ubuntu server using a three-component stack: **Docker** to containerize and run the Blazor application, a **native PostgreSQL** installation on the host for persistent data storage, and **Nginx** as a reverse proxy that terminates SSL and forwards traffic to the container. The Docker container exposes the application on port `8080` internally, which is mapped to port `5010` on the host, and Nginx routes public HTTPS traffic on port `443` to that local port.
+
+## Prerequisites
+
+Before proceeding, ensure the following are in place on your Ubuntu server:
+
+- **Ubuntu server** — with SSH access and a user with `sudo` privileges
+- **Docker** — installed and the daemon running (`sudo systemctl status docker`)
+- **PostgreSQL** — installed natively on the host with the `pharmavault_db` database and schema already created (follow the [Quickstart](/quickstart) SQL steps)
+- **Domain name** — a DNS A record pointing to your server's public IP
+- **SSL certificate and key** — e.g., obtained via Let's Encrypt / Certbot, stored at a known path on the server
+
+<Steps>
+
+  <Step title="Clone the Repository on the Server">
+    SSH into your production server and clone the PharmaVault source code.
+
+    ```bash
+    git clone https://github.com/JReyna217/PharmaVault.git
+    cd PharmaVault
+    ```
+  </Step>
+
+  <Step title="Build the Docker Image">
+    Build the Docker image directly on the host. This ensures the compiled binaries match the server's CPU architecture and avoids ARM vs. x86_64 conflicts that can arise from images built on a different machine.
+
+    ```bash
+    docker build -t pharmavault-app:latest .
+    ```
+
+    <Accordion title="How the multi-stage Dockerfile works">
+      The `Dockerfile` uses a three-stage multi-stage build to produce a minimal production image:
+
+      | Stage | Base Image | What it does |
+      |---|---|---|
+      | `build` | `mcr.microsoft.com/dotnet/sdk:10.0` | Restores NuGet dependencies and compiles the solution in Release mode |
+      | `publish` | Inherits from `build` | Runs `dotnet publish` to produce optimized, self-contained output artifacts |
+      | `final` | `mcr.microsoft.com/dotnet/aspnet:10.0` | Copies only the publish output into a lightweight ASP.NET runtime image, discarding the SDK entirely |
+
+      The final image contains only the runtime and the compiled application — not the .NET SDK, source code, or build tools — keeping it lean and reducing the attack surface.
+    </Accordion>
+  </Step>
+
+  <Step title="Run the Container">
+    Start the container in detached mode with the flags below. Each flag is explained in the comment next to it.
+
+    ```bash
+    docker run -d \
+      --name pharmavault-web \
+      --restart unless-stopped \
+      -p 5010:8080 \
+      --add-host=host.docker.internal:host-gateway \
+      -e "ConnectionStrings__DefaultConnection=Host=host.docker.internal;Database=pharmavault_db;Username=YOUR_DB_USER;Password=YOUR_DB_PASSWORD" \
+      pharmavault-app:latest
+    ```
+
+    | Flag | Purpose |
+    |---|---|
+    | `-d` | Run in detached (background) mode |
+    | `--restart unless-stopped` | Automatically restart the container after a server reboot, unless it was manually stopped |
+    | `-p 5010:8080` | Map host port `5010` to the container's internal port `8080` (the default .NET 8/10 Docker port) |
+    | `--add-host=host.docker.internal:host-gateway` | Adds a DNS alias inside the container that resolves to the host machine's IP, allowing the app to reach PostgreSQL on the host |
+    | `-e "ConnectionStrings__DefaultConnection=..."` | Injects the database connection string as an environment variable (double underscore `__` maps to the `:` separator used in `appsettings.json`) |
+
+    <Warning>
+      The `--add-host=host.docker.internal:host-gateway` flag is only required when PostgreSQL is installed **natively on the host machine**. If your database is running in a separate Docker container on the same Docker network, remove this flag and use the database container's service name or network alias in the connection string instead.
+    </Warning>
+
+    Replace `YOUR_DB_USER` and `YOUR_DB_PASSWORD` with your actual PostgreSQL credentials before running the command.
+  </Step>
+
+  <Step title="Configure Nginx as a Reverse Proxy">
+    A ready-to-use Nginx configuration template is included in the repository at `deploy/nginx/pharmavault.conf`. Copy it to the Nginx sites-available directory and customize the two placeholder values.
+
+    ```bash
+    sudo cp deploy/nginx/pharmavault.conf /etc/nginx/sites-available/pharmavault
+    sudo nano /etc/nginx/sites-available/pharmavault
+    ```
+
+    Replace `[YOUR_URL]` with your domain name and `[YOUR_CERT_PATH]` with the directory containing your SSL certificate files, then save. The full configuration is shown below for reference:
+
+    ```nginx deploy/nginx/pharmavault.conf
+    # HTTP server block - redirects all traffic to HTTPS
+    server {
+        listen 80;
+        server_name [YOUR_URL];
+
+        # Redirect all HTTP requests to HTTPS with a permanent redirect (301)
+        return 301 https://$host$request_uri;
+    }
+
+    # HTTPS server block with SSL and reverse proxy
+    server {
+        listen 443 ssl;
+        server_name [YOUR_URL];
+
+        # SSL certificate and private key paths
+        ssl_certificate     /[YOUR_CERT_PATH]/pharmavault.crt;
+        ssl_certificate_key /[YOUR_CERT_PATH]/pharmavault.key;
+
+        location / {
+            # Reverse proxy to backend application (Docker container on port 5010)
+            proxy_pass http://127.0.0.1:5010;
+
+            # Use HTTP/1.1 for proper connection handling (required for WebSockets)
+            proxy_http_version 1.1;
+
+            # Support WebSocket upgrades
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+
+            # Preserve original host header
+            proxy_set_header Host $host;
+
+            # Bypass cache when upgrading connection (e.g., WebSockets)
+            proxy_cache_bypass $http_upgrade;
+
+            # Forward client IP address to backend
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+            # Forward original protocol (http or https)
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # Access and error logs
+        access_log /var/log/nginx/pharmavault.access.log;
+        error_log  /var/log/nginx/pharmavault.error.log;
+    }
+    ```
+
+    <Note>
+      The `Upgrade` and `Connection "upgrade"` headers in the Nginx `location` block are **required for Blazor Server to function correctly**. Blazor Server uses SignalR, which establishes a persistent WebSocket connection between the browser and the server for real-time UI updates. Without these headers, Nginx will not forward the WebSocket upgrade handshake and the application will fail to initialize.
+    </Note>
+  </Step>
+
+  <Step title="Enable the Site and Reload Nginx">
+    Create a symlink from `sites-available` to `sites-enabled`, test the configuration for syntax errors, and reload Nginx to apply the changes.
+
+    ```bash
+    # Create the symlink to enable the site
+    sudo ln -s /etc/nginx/sites-available/pharmavault /etc/nginx/sites-enabled/
+
+    # Test the Nginx configuration for syntax errors
+    sudo nginx -t
+
+    # Reload Nginx to apply the new configuration (zero-downtime)
+    sudo systemctl reload nginx
+    ```
+
+    If `sudo nginx -t` reports `syntax is ok` and `test is successful`, your site is live. Open your domain in a browser — you should be redirected from HTTP to HTTPS and land on the PharmaVault login page.
+  </Step>
+
+</Steps>

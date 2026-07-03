@@ -1,0 +1,268 @@
+---
+title: "Database Schema: Tables, Columns, and Relationships"
+sidebarTitle: "Database Schema"
+description: "Full reference for PharmaVault's five PostgreSQL tables — users, inventory, medicine_catalog, system_responses, and error_logs — including keys and FK relationships."
+---
+
+PharmaVault stores all data in a PostgreSQL database called `pharmavault_db`, consisting of five tables that are created by two SQL scripts in the `sql/` directory. The schema uses identity columns for all primary keys, UUID generation for incident tracking, and explicit foreign key constraints to maintain referential integrity between users, their inventory, and the error log.
+
+<Note>
+  Always run the scripts in numeric order — `00-CreateDataBase.sql` before `01-InitSchema.sql`. The second script creates tables inside the database that the first script creates, so running them out of order will produce a "database does not exist" error.
+</Note>
+
+---
+
+## Schema Initialization
+
+<Steps>
+  <Step title="Run 00-CreateDataBase.sql">
+    Creates the `pharmavault_db` database. Run this script as a PostgreSQL superuser or a role with `CREATEDB` privileges.
+
+    ```sql sql/00-CreateDataBase.sql
+    CREATE DATABASE pharmavault_db;
+    ```
+  </Step>
+  <Step title="Connect to pharmavault_db">
+    Switch your `psql` session (or client connection) to the newly created database before running the next script.
+
+    ```bash
+    \c pharmavault_db
+    ```
+  </Step>
+  <Step title="Run 01-InitSchema.sql">
+    Creates all five tables with their columns, constraints, defaults, and foreign keys.
+
+    ```sql sql/01-InitSchema.sql
+    CREATE TABLE users ( ... );
+    CREATE TABLE medicine_catalog ( ... );
+    CREATE TABLE inventory ( ... );
+    CREATE TABLE system_responses ( ... );
+    CREATE TABLE error_logs ( ... );
+    ```
+
+    See the [Tables](#tables) section below for the full DDL of each table.
+  </Step>
+</Steps>
+
+---
+
+## Tables
+
+<Accordion title="users">
+  The `users` table stores account credentials and profile information for every registered PharmaVault user. Passwords are never stored in plain text — the application always stores a BCrypt hash in `password_hash`.
+
+  | Column | Type | Constraints | Notes |
+  |---|---|---|---|
+  | `user_id` | `INT` | PK, IDENTITY, NOT NULL | Auto-generated surrogate key |
+  | `email` | `VARCHAR(255)` | UNIQUE, NOT NULL | Used as the login identifier |
+  | `password_hash` | `VARCHAR(255)` | NOT NULL | BCrypt hash of the user's password |
+  | `full_name` | `VARCHAR(100)` | NOT NULL | Display name |
+  | `registration_date` | `TIMESTAMP` | DEFAULT `CURRENT_TIMESTAMP` | Set automatically on insert |
+
+  ```sql
+  CREATE TABLE users (
+      user_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
+      full_name VARCHAR(100) NOT NULL,
+      registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+  ```
+
+  **C# model:** `PharmaVault.Core.Models.User`
+</Accordion>
+
+<Accordion title="medicine_catalog">
+  The `medicine_catalog` table is a shared, admin-managed reference list of medicines that users can add to their personal inventory. Individual catalog entries can be soft-deleted by toggling `is_active` rather than physically removing them.
+
+  | Column | Type | Constraints | Notes |
+  |---|---|---|---|
+  | `catalog_id` | `INT` | PK, IDENTITY, NOT NULL | Auto-generated surrogate key |
+  | `name` | `VARCHAR(250)` | NOT NULL | Medicine name |
+  | `pharmaceutical_form` | `VARCHAR(50)` | NOT NULL | e.g., tablet, capsule, syrup |
+  | `dosage` | `VARCHAR(50)` | nullable | e.g., 500 mg, 10 mg/5 mL |
+  | `is_active` | `BOOLEAN` | DEFAULT `TRUE` | Soft-delete flag |
+
+  ```sql
+  CREATE TABLE medicine_catalog (
+      catalog_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name VARCHAR(250) NOT NULL,
+      pharmaceutical_form VARCHAR(50) NOT NULL,
+      dosage VARCHAR(50),
+      is_active BOOLEAN DEFAULT TRUE
+  );
+  ```
+
+  **C# model:** `PharmaVault.Core.Models.MedicineCatalog`
+</Accordion>
+
+<Accordion title="inventory">
+  The `inventory` table represents each user's personal medication stock. Every row links a user to a catalog entry and records quantity, purchase date, expiration date, and optional prescription notes.
+
+  | Column | Type | Constraints | Notes |
+  |---|---|---|---|
+  | `inventory_id` | `INT` | PK, IDENTITY, NOT NULL | Auto-generated surrogate key |
+  | `user_id` | `INT` | FK → `users.user_id`, NOT NULL, CASCADE DELETE | Owner of this inventory row |
+  | `catalog_id` | `INT` | FK → `medicine_catalog.catalog_id`, NOT NULL | Which medicine this entry is for |
+  | `quantity` | `INT` | NOT NULL, DEFAULT `0` | Current stock count |
+  | `purchase_date` | `DATE` | nullable | Optional purchase record |
+  | `expiration_date` | `DATE` | NOT NULL | Mandatory expiry — used for expiry alerts |
+  | `prescription_notes` | `TEXT` | nullable | Free-text dosage or prescription notes (max 500 chars enforced in C#) |
+  | `date_added` | `TIMESTAMP` | DEFAULT `CURRENT_TIMESTAMP` | Set automatically on insert |
+
+  ```sql
+  CREATE TABLE inventory (
+      inventory_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+      catalog_id INT NOT NULL REFERENCES medicine_catalog(catalog_id),
+      quantity INT NOT NULL DEFAULT 0,
+      purchase_date DATE,
+      expiration_date DATE NOT NULL,
+      prescription_notes TEXT,
+      date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+  ```
+
+  **C# model:** `PharmaVault.Core.Models.Inventory`
+</Accordion>
+
+<Accordion title="system_responses">
+  The `system_responses` table is a lookup table that stores localized response messages for operation outcomes. The `code` column acts as a short, human-readable key (up to 6 characters) that application code uses to look up the appropriate translated message.
+
+  | Column | Type | Constraints | Notes |
+  |---|---|---|---|
+  | `code` | `VARCHAR(6)` | PK, NOT NULL | Short response code (e.g., `OK`, `ERR01`) |
+  | `message_es` | `TEXT` | NOT NULL | Spanish message text |
+  | `message_en` | `TEXT` | NOT NULL | English message text |
+
+  ```sql
+  CREATE TABLE system_responses (
+      code VARCHAR(6) PRIMARY KEY,
+      message_es TEXT NOT NULL,
+      message_en TEXT NOT NULL
+  );
+  ```
+
+  **C# model:** `PharmaVault.Core.Models.SystemResponse`
+</Accordion>
+
+<Accordion title="error_logs">
+  The `error_logs` table records all application exceptions captured by `ExceptionHandlingMiddleware` and routed through `IErrorLogDao.LogErrorAsync`. Each row is assigned a UUID incident number, making it easy to cross-reference a user-visible error reference with the server-side log record.
+
+  | Column | Type | Constraints | Notes |
+  |---|---|---|---|
+  | `log_id` | `INT` | PK, IDENTITY, NOT NULL | Auto-generated surrogate key |
+  | `origin_layer` | `VARCHAR(15)` | NOT NULL | e.g., `Web`, `Data`, `Core` |
+  | `main_object` | `VARCHAR(50)` | NOT NULL | Class or component where the error originated |
+  | `method_name` | `VARCHAR(50)` | NOT NULL | Method where the error was thrown |
+  | `description` | `VARCHAR(4000)` | nullable | Optional additional context |
+  | `error_message` | `VARCHAR(4000)` | NOT NULL | Exception message text |
+  | `error_date` | `TIMESTAMP` | DEFAULT `CURRENT_TIMESTAMP` | Set automatically on insert |
+  | `user_id` | `INT` | FK → `users.user_id`, nullable, SET NULL | Null if the error occurred before authentication |
+  | `incident_number` | `UUID` | NOT NULL, DEFAULT `gen_random_uuid()` | Unique incident identifier shown to users |
+
+  ```sql
+  CREATE TABLE error_logs (
+      log_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      origin_layer VARCHAR(15) NOT NULL,
+      main_object VARCHAR(50) NOT NULL,
+      method_name VARCHAR(50) NOT NULL,
+      description VARCHAR(4000),
+      error_message VARCHAR(4000) NOT NULL,
+      error_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      user_id INT REFERENCES users(user_id) ON DELETE SET NULL,
+      incident_number UUID DEFAULT gen_random_uuid() NOT NULL
+  );
+  ```
+
+  **C# model:** `PharmaVault.Core.Models.ErrorLog`
+</Accordion>
+
+---
+
+## Relationships
+
+PharmaVault's foreign key constraints encode important data-lifecycle decisions directly in the schema.
+
+```
+users ──────────────────────────────────────┐
+  │  (CASCADE DELETE)                        │  (SET NULL)
+  ▼                                          ▼
+inventory                               error_logs
+  │
+  │  (RESTRICT — no action on delete)
+  ▼
+medicine_catalog
+```
+
+<CardGroup cols={2}>
+  <Card title="inventory.user_id → users.user_id" icon="trash">
+    **ON DELETE CASCADE.** When a user account is deleted, all of that user's inventory rows are automatically removed. There is no orphaned inventory data after account deletion.
+  </Card>
+  <Card title="inventory.catalog_id → medicine_catalog.catalog_id" icon="link">
+    **No explicit ON DELETE action** (defaults to RESTRICT). A catalog entry cannot be deleted while inventory rows reference it. Use the `is_active` flag to soft-delete catalog entries instead.
+  </Card>
+</CardGroup>
+
+<CardGroup cols={1}>
+  <Card title="error_logs.user_id → users.user_id" icon="shield">
+    **ON DELETE SET NULL.** Error log records are preserved even after the associated user is deleted. The `user_id` column is set to `NULL`, keeping the full audit trail intact while removing the personal data link.
+  </Card>
+</CardGroup>
+
+---
+
+## Complete Schema SQL
+
+<CodeGroup>
+  ```sql 00-CreateDataBase.sql
+  CREATE DATABASE pharmavault_db;
+  ```
+
+  ```sql 01-InitSchema.sql
+  CREATE TABLE users (
+      user_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
+      full_name VARCHAR(100) NOT NULL,
+      registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE medicine_catalog (
+      catalog_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name VARCHAR(250) NOT NULL,
+      pharmaceutical_form VARCHAR(50) NOT NULL,
+      dosage VARCHAR(50),
+      is_active BOOLEAN DEFAULT TRUE
+  );
+
+  CREATE TABLE inventory (
+      inventory_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+      catalog_id INT NOT NULL REFERENCES medicine_catalog(catalog_id),
+      quantity INT NOT NULL DEFAULT 0,
+      purchase_date DATE,
+      expiration_date DATE NOT NULL,
+      prescription_notes TEXT,
+      date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE system_responses (
+      code VARCHAR(6) PRIMARY KEY,
+      message_es TEXT NOT NULL,
+      message_en TEXT NOT NULL
+  );
+
+  CREATE TABLE error_logs (
+      log_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      origin_layer VARCHAR(15) NOT NULL,
+      main_object VARCHAR(50) NOT NULL,
+      method_name VARCHAR(50) NOT NULL,
+      description VARCHAR(4000),
+      error_message VARCHAR(4000) NOT NULL,
+      error_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      user_id INT REFERENCES users(user_id) ON DELETE SET NULL,
+      incident_number UUID DEFAULT gen_random_uuid() NOT NULL
+  );
+  ```
+</CodeGroup>

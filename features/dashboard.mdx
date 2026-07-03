@@ -1,0 +1,125 @@
+---
+title: "Analytics Dashboard: Visualize Your Inventory Health"
+sidebarTitle: "Dashboard"
+description: "Get a live summary of your medication stock across four counters and an ApexCharts pie chart that breaks down good, expiring, and expired units."
+---
+
+The PharmaVault dashboard gives you an at-a-glance view of your entire medication inventory the moment you log in. It aggregates every item you own into four plain-English counters and renders a colour-coded pie chart so you can immediately spot whether stock is healthy, approaching expiry, or already past it — without digging through individual records.
+
+## Dashboard Stats
+
+Every time the dashboard loads it calls `IInventoryDao.GetDashboardStatsAsync(int userId)` and populates a `DashboardStatsDto` object with four integer counters derived from the quantities stored in your inventory rows.
+
+```csharp
+namespace PharmaVault.Core.Models;
+
+public class DashboardStatsDto
+{
+    public int TotalStock { get; set; }
+    public int ExpiredStock { get; set; }
+    public int ExpiringSoonStock { get; set; }
+    public int GoodStock { get; set; }
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="TotalStock" icon="boxes-stacked">
+    The sum of all quantity values across every inventory row that belongs to the authenticated user. This is the headline number shown at the top of the dashboard.
+  </Card>
+  <Card title="GoodStock" icon="circle-check">
+    Units whose expiration date falls more than 30 days in the future. These are considered safe to use without any urgency.
+  </Card>
+  <Card title="ExpiringSoonStock" icon="clock">
+    Units expiring on or before `CURRENT_DATE + INTERVAL '30 days'` but not yet past today's date. The 30-day window gives you time to plan before stock becomes unusable.
+  </Card>
+  <Card title="ExpiredStock" icon="triangle-exclamation">
+    Units whose expiration date is strictly before today (`CURRENT_DATE`). These should be reviewed and removed from active use.
+  </Card>
+</CardGroup>
+
+## How Expiration Thresholds Work
+
+The four counters are calculated in a single PostgreSQL query using `CASE` expressions evaluated against `CURRENT_DATE`. No application-layer date math is involved — the database computes the buckets at query time.
+
+```sql
+SELECT
+    COALESCE(SUM(quantity), 0) AS TotalStock,
+    COALESCE(SUM(CASE WHEN expiration_date < CURRENT_DATE
+                      THEN quantity ELSE 0 END), 0)                          AS ExpiredStock,
+    COALESCE(SUM(CASE WHEN expiration_date >= CURRENT_DATE
+                       AND expiration_date <= CURRENT_DATE + INTERVAL '30 days'
+                      THEN quantity ELSE 0 END), 0)                          AS ExpiringSoonStock,
+    COALESCE(SUM(CASE WHEN expiration_date > CURRENT_DATE + INTERVAL '30 days'
+                      THEN quantity ELSE 0 END), 0)                          AS GoodStock
+FROM inventory
+WHERE user_id = @UserId;
+```
+
+<Note>
+  `COALESCE(..., 0)` ensures that a user with no inventory rows receives zeroes instead of `NULL` for every counter.
+</Note>
+
+The thresholds are:
+
+| Category | Condition |
+|---|---|
+| **Expired** | `expiration_date < CURRENT_DATE` |
+| **Expiring Soon** | `expiration_date >= CURRENT_DATE AND expiration_date <= CURRENT_DATE + 30 days` |
+| **Good** | `expiration_date > CURRENT_DATE + 30 days` |
+
+## ApexCharts Pie Chart
+
+When `TotalStock > 0`, the dashboard renders an interactive pie chart powered by the [ApexCharts Blazor](https://apexcharts.github.io/Blazor-ApexCharts/) library. The chart maps each stock category to a fixed colour:
+
+| Slice | Colour | Hex |
+|---|---|---|
+| Good Condition | Green | `#198754` |
+| Expiring Soon | Amber | `#ffc107` |
+| Expired | Red | `#dc3545` |
+
+The chart background is set to `transparent` so it blends with any page theme. When `TotalStock` equals zero the chart is hidden entirely to avoid rendering an empty or misleading graphic.
+
+### `InventoryChartData` Model
+
+Each pie slice is backed by a lightweight data class that holds a human-readable label and a count:
+
+```csharp
+public class InventoryChartData
+{
+    public string Status { get; set; } = string.Empty;
+    public int Count { get; set; }
+}
+```
+
+The three instances are constructed in `Dashboard.razor.cs` after stats are loaded:
+
+```csharp
+_chartData = new List<InventoryChartData>
+{
+    new() { Status = "Good Condition",   Count = _stats.GoodStock },
+    new() { Status = "Expiring Soon",    Count = _stats.ExpiringSoonStock },
+    new() { Status = "Expired",          Count = _stats.ExpiredStock }
+};
+
+_chartOptions = new ApexChartOptions<InventoryChartData>
+{
+    Colors = new List<string> { "#198754", "#ffc107", "#dc3545" },
+    Chart  = new Chart { Background = "transparent" }
+};
+```
+
+## Accessing the Dashboard
+
+<Info>
+  The dashboard is served at the `/dashboard` route and requires an authenticated session. Unauthenticated visitors are redirected to `/` (the login page) automatically by the cookie authentication middleware.
+</Info>
+
+Once authenticated, the page header displays two pieces of contextual information resolved from the active `ClaimsPrincipal`:
+
+- **User's full name** — read from `ClaimTypes.Name`, which is set to `User.FullName` at login.
+- **Current date** — formatted as `"dddd, MMMM dd, yyyy"` (e.g., *Monday, July 14, 2025*) using `DateTime.Now`.
+
+```csharp
+UserName    = user.Identity.Name ?? "User";
+CurrentDate = DateTime.Now.ToString("dddd, MMMM dd, yyyy");
+```
